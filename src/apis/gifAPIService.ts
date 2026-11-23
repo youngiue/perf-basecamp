@@ -11,6 +11,10 @@ if (!API_KEY) {
 
 const BASE_URL = 'https://api.giphy.com/v1/gifs';
 const DEFAULT_FETCH_COUNT = 16;
+const TRENDING_CACHE_TTL = 1000 * 60 * 10; // 10분: trending은 실시간일 필요 없음
+
+// trending 캐시: 결과가 아니라 Promise를 저장해 동시 호출도 요청 1번으로 합침
+let trendingCache: { promise: Promise<GifImageModel[]>; cachedAt: number } | null = null;
 
 const convertResponseToModel = (gifList: IGif[]): GifImageModel[] => {
   return gifList.map(({ id, title, images }) => {
@@ -40,17 +44,32 @@ const fetchGifs = async (url: URL): Promise<GifImageModel[]> => {
 export const gifAPIService = {
   /**
    * treding gif 목록을 가져옵니다.
+   * 한 번 받은 결과는 TTL 동안 메모리에 캐시해 재사용합니다.
    * @returns {Promise<GifImageModel[]>}
    * @ref https://developers.giphy.com/docs/api/endpoint#!/gifs/trending
    */
   getTrending: async (): Promise<GifImageModel[]> => {
+    const isCacheValid =
+      trendingCache !== null && Date.now() - trendingCache.cachedAt < TRENDING_CACHE_TTL;
+
+    if (isCacheValid) {
+      return trendingCache!.promise;
+    }
+
     const url = apiClient.appendSearchParams(new URL(`${BASE_URL}/trending`), {
       api_key: API_KEY,
       limit: `${DEFAULT_FETCH_COUNT}`,
       rating: 'g'
     });
 
-    return fetchGifs(url);
+    const promise = fetchGifs(url).catch((error) => {
+      trendingCache = null; // 실패한 요청은 캐시하지 않음 → 다음 진입 때 재시도
+      throw error;
+    });
+
+    trendingCache = { promise, cachedAt: Date.now() };
+
+    return promise;
   },
   /**
    * 검색어에 맞는 gif 목록을 가져옵니다.
